@@ -1,6 +1,6 @@
 debug("rule-generators/subclass") |
 {
-    result:
+    result: (
         "CONSTRUCT {?subj a ?super_class} WHERE {" +
             "?subj a ?class " +
             "VALUES (?super_class ?class) {\(
@@ -10,4 +10,5 @@ debug("rule-generators/subclass") |
                 ] | join(" ")
             )}" +
         "}"
+    )
 }

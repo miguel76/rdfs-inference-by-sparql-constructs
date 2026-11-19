@@ -1,5 +1,5 @@
 {
-    result:
+    result: (
     "CONSTRUCT {?subj ?super_property ?obj} WHERE {" +
         "?subj ?property ?obj " +
         "VALUES (?super_property ?property) {\(
@@ -9,4 +9,5 @@
             ] | join(" ")
         )}" +
     "}"
+    )
 }

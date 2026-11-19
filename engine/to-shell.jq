@@ -1,54 +1,42 @@
+# Translates a step description into a shell script.
+#
+# A step is one of:
+#   "cmd"                      shorthand for {shell: "cmd"}
+#   {shell: "cmd"}             run a shell command; its stdout is the output
+#   {result: X}                output X (as JSON)
+#   {error: msg}               print msg on stderr and fail
+#   {action: A, next: "f"}     run A, feed its output to filter f, then
+#                              recursively execute the step f returns
+#   {action: A}                just run A
+#   {next: "f"}                run filter f with null input (-n)
+#   [s1, s2, ...]              run steps in sequence, collect their (JSON)
+#                              outputs into an array
 def to_shell:
-#    debug("to_shell input: \(.)") |
-#    debug($config) |
-    if type=="array" then 
-        "{ \(
-            map("(\(to_shell))") |
-            join("; ")
-        ); }"
+    if type == "array" then
+        "{ \(map("(\(to_shell))") | join("; ")); } | jq -s '.'"
     else
-        if type=="string" then
-            {shell: .}
-        end |
-        if .result then
-            "echo '\(.result)'"
-        elif .error then
-            "echo 'Error: \(.error)'; exit 1"
-        elif .shell then
+        if type == "string" then {shell: .} end |
+        if has("result") then
+            "printf '%s\\n' \(.result | tojson | @sh)"
+        elif has("error") then
+            "printf 'Error: %s\\n' \(.error | tostring | @sh) >&2; exit 1"
+        elif has("shell") then
             .shell
-        elif .action or .next then
+        elif has("action") or has("next") then
             [
-                if .action then
-                    ( 
-                        (.action | to_shell),
-                        if .action | type == "array" then
-                            "jq -s '.'"
-                        else
-                            empty
-                        end
-                    )
+                if has("action") then (.action | to_shell) else empty end,
+                if has("next") then
+                    "jq\(if has("action") then "" else " -n" end) -f \("\($config.flow_path)/\(.next).jq" | @sh)",
+                    "jq -r -f \("\($config.engine_path)/to-shell.jq" | @sh) --argjson config \($config | tojson | @sh)",
+                    # the previous filter emits a shell script: execute it
+                    "{ script=$(cat); eval \"$script\"; }"
                 else
                     empty
                 end
-            ] as $actions |
-            "$(\(
-                [
-                    $actions[],
-                    if .next then
-                        (
-                            "jq -f '\($config.flow_path)/\(.next).jq'\(
-                                if .action | not then " -n" else "" end
-                            )",
-                            "jq -r -f '\($config.engine_path)/to-shell.jq' --argjson config '\($config | tojson)'"
-                        )
-                    else
-                        empty
-                    end
-                ] | join(" | ")
-            ))"
+            ] | join(" | ")
+        else
+            "Invalid step: \(tojson)" | error
         end
     end;
-    # debug("to_shell output: \(.)");
-
 
 to_shell
