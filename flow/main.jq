@@ -11,6 +11,8 @@
         map({
             action: "\($arq_prefix) --query=queries/\(.).rq",
             next: "rule-generators/\(.)"
-        })
+        }) + [
+            {result: "CONSTRUCT WHERE {?s ?p ?o}"}
+        ]
 }
 
