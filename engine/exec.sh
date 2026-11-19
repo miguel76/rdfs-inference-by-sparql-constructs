@@ -1,20 +1,19 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Usage: ./engine/exec.sh <flow-name>
 # Runs flow/<flow-name>.jq and recursively executes the steps it returns.
-#
-# Error handling: the generated scripts are pipelines nested in subshells and
-# command substitutions, so we need all of
-#   -e              stop at the first failing command
-#   -o pipefail     a pipeline fails if any of its stages fails
-#   inherit_errexit -e also applies inside $( ... )
-# Shell options are inherited by the subshells the generated script creates.
-set -eo pipefail
-shopt -s inherit_errexit
+# Prints the final result (as JSON) on stdout, or the error on stderr
+# (exit status 1).
 
 CONFIG='{"engine_path": "engine", "flow_path": "flow"}'
 
 echo "Executing $1" >&2
 
-CMD=$(jq -n --arg next "$1" '{next: $next}' | jq -r -f engine/to-shell.jq --argjson config "$CONFIG")
+CMD=$(jq -nc --arg next "$1" '{next: $next}' | jq -rn -f engine/to-shell.jq --argjson config "$CONFIG") || exit 1
 echo "Executing command: ${CMD}" >&2
-eval "$CMD"
+ENVELOPE=$(eval "$CMD")
+
+if printf '%s\n' "$ENVELOPE" | jq -e 'has("error")' >/dev/null; then
+    printf '%s\n' "$ENVELOPE" | jq -r '"Error: \(.error | if type == "string" then . else tojson end)"' >&2
+    exit 1
+fi
+printf '%s\n' "$ENVELOPE" | jq '.result'
