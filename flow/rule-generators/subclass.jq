@@ -1,4 +1,3 @@
-debug("rule-generators/subclass") |
 {
     result: (
         "CONSTRUCT {?subj a ?super_class} WHERE {" +

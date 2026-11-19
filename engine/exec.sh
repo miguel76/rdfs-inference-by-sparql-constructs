@@ -6,10 +6,7 @@
 
 CONFIG='{"engine_path": "engine", "flow_path": "flow"}'
 
-echo "Executing $1" >&2
-
 CMD=$(jq -nc --arg next "$1" '{next: $next}' | jq -rn -f engine/to-shell.jq --argjson config "$CONFIG") || exit 1
-echo "Executing command: ${CMD}" >&2
 ENVELOPE=$(eval "$CMD")
 
 if printf '%s\n' "$ENVELOPE" | jq -e 'has("error")' >/dev/null; then

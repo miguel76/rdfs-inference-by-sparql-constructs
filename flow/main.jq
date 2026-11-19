@@ -5,8 +5,6 @@
     $ontologies | map("--data=ontologies/\(.)") | join(" ")
 )" as $arq_prefix | 
 
-debug("main.jq") |
-
 {
     action:
         $rules |
