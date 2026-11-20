@@ -6,7 +6,11 @@
 #                     {"engine_path", "flow_path", "data_path"}
 #   --arg base        absolute directory of the filter that produced the step,
 #                     against which "./..." references are resolved
-#   --argjson next    (optional) step to insert as continuation (see `add_next`)
+#   --argjson has_next true
+#                     (optional) the first JSON value in input is a step to
+#                     insert as continuation of the others (see `add_next`);
+#                     it is passed on stdin rather than as an argument, to
+#                     avoid the limit on the size of command-line arguments
 #
 # The generated script for a step reads the step's input (as JSON text) from
 # the shell variable $__in and prints exactly one JSON envelope on stdout:
@@ -24,7 +28,7 @@ def print_json: "printf '%s\\n' \(tojson | @sh)";
 # to absolute paths.
 
 def main_keys: ["result", "error", "shell", "fetch_file", "call", "sync_call", "action"];
-def other_keys: ["next", "sync_next", "on_error", "format"];
+def other_keys: ["input", "args", "next", "sync_next", "on_error", "format"];
 def formats: ["auto", "json", "text"];
 
 # a step used as `next` or `on_error`: a string is a reference to a filter
@@ -51,6 +55,16 @@ def normalize:
             error("a step can't have both next and sync_next, in step \(tojson)")
         elif has("shell") and (.shell | type) != "string" then
             error("shell must be a string, in step \(tojson)")
+        elif has("input") and (has("result") or has("error")) then
+            error("input can't be used with result or error, in step \(tojson)")
+        elif has("args") and (has("call") or has("sync_call") | not) then
+            error("args can only be used with call or sync_call, in step \(tojson)")
+        elif has("args") and (.args | type) != "object" then
+            error("args must be an object, in step \(tojson)")
+        elif has("args") and (.args | keys | any(test("^[A-Za-z_][A-Za-z0-9_]*$") | not)) then
+            error("args names must be valid jq variable names, in step \(tojson)")
+        elif has("args") and (.args | keys | any(. == "engine_context" or . == "ENV" or . == "ARGS" or startswith("__"))) then
+            error("engine_context, ENV, ARGS and names starting with __ are reserved, in args of step \(tojson)")
         else . end |
         if has("sync_next") then .next = {sync_call: .sync_next} | del(.sync_next) else . end |
         if has("next") then .next |= (continuation | normalize) else . end |
@@ -58,7 +72,12 @@ def normalize:
         if has("call") then .call |= resolve_filter_ref($base; $config) else . end |
         if has("sync_call") then .sync_call |= resolve_filter_ref($base; $config) else . end |
         if has("fetch_file") then .fetch_file |= resolve_file_ref($base; $config) else . end |
-        if has("action") then .action |= normalize else . end
+        if has("action") then .action |= normalize else . end |
+        # {input: X, ...rest} is {result: X, next: {...rest}}
+        if has("input") then
+            .input as $input | del(.input) |
+            if . == {} then {result: $input} else {result: $input, next: .} end
+        else . end
     else
         error("invalid step: \(tojson)")
     end;
@@ -98,33 +117,38 @@ def on_envelope($script; $key; $then):
 
 # Runs filter $path on $__in. Sets $__out (stdout), $__st (exit status) and
 # $__msg (stderr). The filter gets the engine context (for resolve_file).
-def run_filter($path):
+def run_filter($path; $args):
     {base: ($path | _dirname), config: $config} as $context |
     "__errf=$(mktemp) || { \({error: {type: "engine", message: "mktemp failed"}} | print_json); exit; }; " +
-    "__out=$( printf '%s\\n' \"$__in\" | jq -c \(jq_search_path) --argjson engine_context \($context | tojson | quote) -f \($path | quote) 2>\"$__errf\" ); " +
+    "__out=$( printf '%s\\n' \"$__in\" | jq -c \(jq_search_path) --argjson engine_context \($context | tojson | quote)\(
+        ($args // {}) | to_entries | map(" --argjson \(.key) \(.value | tojson | quote)") | join("")
+    ) -f \($path | quote) 2>\"$__errf\" ); " +
     "__st=$?; __msg=$(cat \"$__errf\"); rm -f \"$__errf\"; ";
 
+# (data that may be large is passed to jq on stdin, never as an argument)
 def filter_error($path):
-    "jq -nc --argjson status \"$__st\" --arg message \"$__msg\" --arg filter \($path | quote) " +
-    "'{error: {type: \"filter\", filter: $filter, status: $status, message: $message}}'";
+    "printf '%s' \"$__msg\" | jq -Rsc --argjson status \"$__st\" --arg filter \($path | quote) " +
+    "'{error: {type: \"filter\", filter: $filter, status: $status, message: .}}'";
 
 # stderr of a successful filter (e.g. debug messages) is passed through
 def pass_messages: "if [ -n \"$__msg\" ]; then printf '%s\\n' \"$__msg\" >&2; fi; ";
 
 # {call: $path}, with optional continuation $next inserted in the returned step
-def call_script($path; $next):
-    "( \(run_filter($path))" +
+def call_script($path; $args; $next):
+    "( \(run_filter($path; $args))" +
     "if [ \"$__st\" -eq 0 ]; then \(pass_messages)" +
-        "if __script=$( printf '%s\\n' \"$__out\" | " +
+        "if __script=$( { " +
+            (if $next then "printf '%s\\n' \($next | tojson | quote); " else "" end) +
+            "printf '%s\\n' \"$__out\"; } | " +
             "jq -rn -L \("\($config.engine_path)/lib" | quote) -f \("\($config.engine_path)/to-shell.jq" | quote) " +
             "--argjson config \($config | tojson | quote) --arg base \($path | _dirname | quote)" +
-            (if $next then " --argjson next \($next | tojson | quote)" else "" end) +
+            (if $next then " --argjson has_next true" else "" end) +
         " ); then __in=null; eval \"$__script\"; " +
         "else \({error: {type: "engine", filter: $path, message: "translation of the returned step failed"}} | print_json); fi; " +
     "else \(filter_error($path)); fi )";
 
-def sync_call_script($path):
-    "( \(run_filter($path))" +
+def sync_call_script($path; $args):
+    "( \(run_filter($path; $args))" +
     "if [ \"$__st\" -eq 0 ]; then \(pass_messages)" +
         "printf '%s\\n' \"$__out\" | jq -sc --arg filter \($path | quote) " +
         "'if length == 1 then {result: .[0]} " +
@@ -136,8 +160,8 @@ def shell_script($command; $format):
     "if [ \"$__st\" -eq 0 ]; then " +
         "printf '%s' \"$__out\" | jq -Rsc \(parse_program($format) | quote); " +
     "else " +
-        "jq -nc --argjson status \"$__st\" --arg command \($command | quote) " +
-        "'{error: {type: \"shell\", command: $command, status: $status}}'; " +
+        "printf '%s' \($command | quote) | jq -Rsc --argjson status \"$__st\" " +
+        "'{error: {type: \"shell\", command: ., status: $status}}'; " +
     "fi )";
 
 def fetch_file_script($path; $format):
@@ -157,15 +181,15 @@ def translate:
         "printf '%s\\n' \"$__envs\" | jq -sc '(map(select(has(\"error\")))[0]) // {result: map(.result)}' )"
     elif has("call") and has("next") and (has("on_error") | not) then
         # the continuation is inserted in the step returned by the filter
-        call_script(.call; .next)
+        call_script(.call; .args; .next)
     else
         . as $step |
         if has("result") then {result} | print_json
         elif has("error") then {error} | print_json
         elif has("shell") then shell_script(.shell; .format)
         elif has("fetch_file") then fetch_file_script(.fetch_file; .format)
-        elif has("call") then call_script(.call; null)
-        elif has("sync_call") then sync_call_script(.sync_call)
+        elif has("call") then call_script(.call; .args; null)
+        elif has("sync_call") then sync_call_script(.sync_call; .args)
         elif has("action") then .action | translate
         else "( printf '%s\\n' \"$__in\" | jq -c '{result: .}' )"  # no main part: the input is the result
         end |
@@ -174,10 +198,11 @@ def translate:
     end;
 
 # a filter emitting several steps is equivalent to one emitting their array
+(if $ARGS.named.has_next then input else null end) as $next |
 [inputs] | (if length == 1 then .[0] else . end) as $step |
 try (
     $step | normalize |
-    if $ARGS.named.next then add_next($ARGS.named.next) else . end |
+    if $next then add_next($next) else . end |
     translate
 ) catch (
     {error: {type: "step", message: ., step: $step}} | print_json

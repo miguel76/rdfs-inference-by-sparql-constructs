@@ -30,11 +30,23 @@ This calls `flow/main.jq`, which queries the ontologies in `ontologies/` with
 the queries in `queries/` and passes the results to the rule generators in
 `flow/rule-generators/`. The output is a JSON array of `CONSTRUCT` queries.
 
-`exec.sh <filter>` calls the given filter with `null` input. The filter
-reference is resolved as in a `call` step: `main` is `$FLOW_PATH/main.jq`,
-`./x/y` is `x/y.jq` in the current directory. On success it prints the final
-result (as JSON) on stdout and exits with 0. On failure it prints
-`Error: ...` on stderr and exits with 1. Debug messages go to stderr.
+`exec.sh [options] <filter>` calls the given filter. The filter reference is
+resolved as in a `call` step: `main` is `$FLOW_PATH/main.jq`, `./x/y` is
+`x/y.jq` in the current directory. On success it prints the final result (as
+JSON) on stdout and exits with 0. On failure it prints `Error: ...` on stderr
+and exits with 1. Debug messages go to stderr.
+
+| Option | Meaning |
+|---|---|
+| `--input JSON` | the input of the filter (default: `null`) |
+| `--stdin` | read the input of the filter (exactly one JSON value) from stdin |
+| `--args JSON` | named arguments for the filter (an object, as [`args`](#call-and-sync_call-arguments) in a `call` step) |
+
+For example:
+
+```bash
+echo '{"x": 1}' | ./engine/exec.sh --stdin --args '{"verbose": true}' ./my-flow
+```
 
 Configuration, through environment variables (relative to the current
 directory):
@@ -75,7 +87,7 @@ An object step has at most one **main field**, saying what the step does:
 | `"error": E` | fails with error `E` (any JSON value) |
 | `"shell": "cmd"` | the output of shell command `cmd` (see [Data formats](#data-formats)) |
 | `"fetch_file": "ref"` | the content of the data file `ref` (see [Data formats](#data-formats)) |
-| `"call": "ref"` | runs the asynchronous filter `ref` on the input, then executes the step it returns (with `null` input); the result is that step's result |
+| `"call": "ref"` | runs the asynchronous filter `ref` on the input, then executes the step it returns (with `null` input, see [Inputs](#inputs)); the result is that step's result |
 | `"sync_call": "ref"` | the output of the synchronous filter `ref` run on the input |
 | `"action": S` | the result of step `S`, executed with the same input |
 | *(none)* | the input itself |
@@ -84,6 +96,8 @@ and optionally these fields:
 
 | Field | Meaning |
 |---|---|
+| `"input": X` | the step's input is `X`, instead of the one it would get (see [Inputs](#inputs)) |
+| `"args": {...}` | for `call` and `sync_call`: named arguments for the filter (see [Arguments](#call-and-sync_call-arguments)) |
 | `"next": N` | then execute step `N` with the result as input; the result of `N` is the result of the whole step |
 | `"sync_next": "ref"` | shorthand for `"next": {"sync_call": "ref"}` |
 | `"on_error": H` | if the main part of the step fails with error `E`, execute step `H` with `E` as input; its result (or error) replaces the failed one |
@@ -93,6 +107,52 @@ In `next` and `on_error`, a string is a reference to an asynchronous filter
 (i.e. `"next": "ref"` is `"next": {"call": "ref"}`), not a shell command.
 
 Unknown fields, or more than one main field, make the step invalid.
+
+### Inputs
+
+The input of a step comes from where the step is:
+
+| Step | Input |
+|---|---|
+| the step run by `exec.sh` | `null`, or as given by `--input` / `--stdin` |
+| a step returned by a filter | `null` |
+| `action`, array elements | the input of the enclosing step |
+| `next` | the result of the main part of the enclosing step |
+| `on_error` | the error |
+
+A step returned by a filter is thus self-contained: any data it needs is in
+the step itself. To give a step a specific input, use the `input` field:
+
+```jq
+{call: "./g", input: .records, next: "./h"}
+```
+
+`{"input": X, ...rest}` is a shorthand for `{"result": X, "next": {...rest}}`:
+the step's own `next` and `on_error` apply to `rest`, as usual. `input`
+can't be used with `result` or `error`.
+
+Note that `input` replaces the input the step would otherwise get: in
+`{"action": A, "next": {"call": "g", "input": X}}` the result of `A` is
+discarded.
+
+### `call` and `sync_call` arguments
+
+Besides their input (the data flowing through the pipeline), filters can be
+given named arguments, meant for parameters (configuration, options, names,
+...), with `args`:
+
+```jq
+{call: "./generate-rule", args: {rule: "subclass"}, input: .bindings}
+```
+
+Each entry is passed to the filter as `--argjson name value`: the filter can
+use it as `$rule`, or through `$ARGS.named`. Names must be valid jq variable
+names; `engine_context`, `ENV`, `ARGS` and names starting with `__` are
+reserved. A filter using a variable that it is not given fails to compile.
+
+Arguments are passed on the command line, so they are subject to the
+operating system's limit on the size of a command-line argument (128 KB on
+Linux): pass large data as `input`, which has no such limit.
 
 ### `call` and `next`
 
@@ -258,8 +318,8 @@ The engine passes its context to the filters it runs as
 
 ## Engine
 
-- `engine/exec.sh <filter>`: entry point. Computes the configuration and
-  executes `{"call": "<filter>"}`.
+- `engine/exec.sh [options] <filter>`: entry point. Computes the
+  configuration and executes `{"call": "<filter>", "input": ..., "args": ...}`.
 - `engine/to-shell.jq`: translates a step into a POSIX shell script. It first
   normalizes the step (desugaring, resolving references), then translates
   it. The script for any step reads the step input from the shell variable
@@ -268,6 +328,11 @@ The engine passes its context to the filters it runs as
   with `to-shell.jq` again, at execution time.
 - `engine/lib/engine.jq`: the engine library, used by both `to-shell.jq` and
   the filters.
+
+Data that can be large (steps, inputs, results, error messages) is always
+passed to `jq` on stdin or embedded in the generated script, never as a
+command-line argument, so it is not subject to the operating system's limit
+on argument size. The only exception is `args`.
 
 A step's main part is always completed before its `next` starts, since the
 engine must know whether the main part failed before deciding whether to run
