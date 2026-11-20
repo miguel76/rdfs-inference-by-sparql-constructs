@@ -115,45 +115,57 @@ def on_envelope($script; $key; $then):
         "__in=$( printf '%s\\n' \"$__env\" | jq -c '.\($key)' ); \($then); " +
     "else printf '%s\\n' \"$__env\"; fi )";
 
-# Runs filter $path on $__in. Sets $__out (stdout), $__st (exit status) and
-# $__msg (stderr). The filter gets the engine context (for resolve_file).
-def run_filter($path; $args):
-    {base: ($path | _dirname), config: $config} as $context |
+# Looks up the file of filter $ref (an absolute filter reference): the first
+# existing one among its candidates. Sets $__f (the file), $__base (its
+# directory) and $__ctx (the engine context for the filter, for resolve_file);
+# if none exists, prints an error envelope and exits (the subshell).
+def find_filter($ref):
+    ($ref | _filter_candidates) as $candidates |
+    ($candidates | map(
+        "[ -f \(quote) ]; then __f=\(quote); __base=\(_dirname | quote); " +
+        "__ctx=\({base: _dirname, config: $config} | tojson | quote); "
+    ) | "if " + join("elif ")) +
+    "else \({error: {type: "filter", filter: $ref, message: "filter not found", candidates: $candidates}} | print_json); exit; fi; ";
+
+# Runs filter $ref on $__in. Sets $__f, $__base (see find_filter), $__out
+# (stdout), $__st (exit status) and $__msg (stderr).
+def run_filter($ref; $args):
+    find_filter($ref) +
     "__errf=$(mktemp) || { \({error: {type: "engine", message: "mktemp failed"}} | print_json); exit; }; " +
-    "__out=$( printf '%s\\n' \"$__in\" | jq -c \(jq_search_path) --argjson engine_context \($context | tojson | quote)\(
+    "__out=$( printf '%s\\n' \"$__in\" | jq -c \(jq_search_path) --argjson engine_context \"$__ctx\"\(
         ($args // {}) | to_entries | map(" --argjson \(.key) \(.value | tojson | quote)") | join("")
-    ) -f \($path | quote) 2>\"$__errf\" ); " +
+    ) -f \"$__f\" 2>\"$__errf\" ); " +
     "__st=$?; __msg=$(cat \"$__errf\"); rm -f \"$__errf\"; ";
 
 # (data that may be large is passed to jq on stdin, never as an argument)
-def filter_error($path):
-    "printf '%s' \"$__msg\" | jq -Rsc --argjson status \"$__st\" --arg filter \($path | quote) " +
+def filter_error:
+    "printf '%s' \"$__msg\" | jq -Rsc --argjson status \"$__st\" --arg filter \"$__f\" " +
     "'{error: {type: \"filter\", filter: $filter, status: $status, message: .}}'";
 
 # stderr of a successful filter (e.g. debug messages) is passed through
 def pass_messages: "if [ -n \"$__msg\" ]; then printf '%s\\n' \"$__msg\" >&2; fi; ";
 
-# {call: $path}, with optional continuation $next inserted in the returned step
-def call_script($path; $args; $next):
-    "( \(run_filter($path; $args))" +
+# {call: $ref}, with optional continuation $next inserted in the returned step
+def call_script($ref; $args; $next):
+    "( \(run_filter($ref; $args))" +
     "if [ \"$__st\" -eq 0 ]; then \(pass_messages)" +
         "if __script=$( { " +
             (if $next then "printf '%s\\n' \($next | tojson | quote); " else "" end) +
             "printf '%s\\n' \"$__out\"; } | " +
             "jq -rn -L \("\($config.engine_path)/lib" | quote) -f \("\($config.engine_path)/to-shell.jq" | quote) " +
-            "--argjson config \($config | tojson | quote) --arg base \($path | _dirname | quote)" +
+            "--argjson config \($config | tojson | quote) --arg base \"$__base\"" +
             (if $next then " --argjson has_next true" else "" end) +
         " ); then __in=null; eval \"$__script\"; " +
-        "else \({error: {type: "engine", filter: $path, message: "translation of the returned step failed"}} | print_json); fi; " +
-    "else \(filter_error($path)); fi )";
+        "else printf '%s' \"$__f\" | jq -Rsc '{error: {type: \"engine\", filter: ., message: \"translation of the returned step failed\"}}'; fi; " +
+    "else \(filter_error); fi )";
 
-def sync_call_script($path; $args):
-    "( \(run_filter($path; $args))" +
+def sync_call_script($ref; $args):
+    "( \(run_filter($ref; $args))" +
     "if [ \"$__st\" -eq 0 ]; then \(pass_messages)" +
-        "printf '%s\\n' \"$__out\" | jq -sc --arg filter \($path | quote) " +
+        "printf '%s\\n' \"$__out\" | jq -sc --arg filter \"$__f\" " +
         "'if length == 1 then {result: .[0]} " +
         "else {error: {type: \"sync_call\", filter: $filter, message: \"expected exactly one output, got \\(length)\"}} end'; " +
-    "else \(filter_error($path)); fi )";
+    "else \(filter_error); fi )";
 
 def shell_script($command; $format):
     "( __out=$( \($command)\n ); __st=$?; " +

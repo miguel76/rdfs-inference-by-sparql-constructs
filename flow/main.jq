@@ -4,7 +4,7 @@ include "engine";
 
 $rules |
 map({
-    call: "\(.)/\(.)",
+    call: .,
     args: {
         query_ontologies: ("./query-ontologies" | resolve_filter)
     }
