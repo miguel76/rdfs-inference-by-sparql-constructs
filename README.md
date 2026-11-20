@@ -26,13 +26,16 @@ directly:
 ./engine/exec.sh main
 ```
 
-This calls `flow/main.jq`, which queries the ontologies in `ontologies/` with
-the queries in `queries/` and passes the results to the rule generators in
-`flow/rule-generators/`. The output is a JSON array of `CONSTRUCT` queries.
+This calls `flow/main.jq`, which calls one subflow per rule
+(`flow/subclass/`, `flow/subproperty/`). Each subflow queries the ontologies
+in `ontologies/` with its `relation.rq` (through `flow/query-ontologies.jq`)
+and turns the results into a `CONSTRUCT` query with its `rule.jq`. The output
+is a JSON array of `CONSTRUCT` queries.
 
 `exec.sh [options] <filter>` calls the given filter. The filter reference is
-resolved as in a `call` step: `main` is `$FLOW_PATH/main.jq`, `./x/y` is
-`x/y.jq` in the current directory. On success it prints the final result (as
+resolved as in a `call` step: `main` is `$FLOW_PATH/main.jq` (or
+`$FLOW_PATH/main/main.jq`), `./x/y` is `x/y.jq` (or `x/y/y.jq`) in the current
+directory. On success it prints the final result (as
 JSON) on stdout and exits with 0. On failure it prints `Error: ...` on stderr
 and exits with 1. Debug messages go to stderr.
 
@@ -177,18 +180,24 @@ afterwards.)
 `flow/main.jq` returns (simplified):
 
 ```json
-{
-  "action": [
-    {"action": "arq ... --query=/.../queries/subclass.rq",    "sync_next": "./rule-generators/subclass"},
-    {"action": "arq ... --query=/.../queries/subproperty.rq", "sync_next": "./rule-generators/subproperty"},
-    {"result": "CONSTRUCT WHERE {?s ?p ?o}"}
-  ]
-}
+[
+  {"call": "subclass",    "args": {"query_ontologies": "/.../flow/query-ontologies"}},
+  {"call": "subproperty", "args": {"query_ontologies": "/.../flow/query-ontologies"}},
+  {"result": "CONSTRUCT WHERE {?s ?p ?o}"}
+]
 ```
 
-The engine runs the first `arq` query, passes its JSON results to the
-synchronous filter `flow/rule-generators/subclass.jq`, which outputs a
-`CONSTRUCT` query; then does the same for the second query. The results are
+The engine calls `flow/subclass/subclass.jq` (see
+[Filter lookup](#filter-lookup)), which returns:
+
+```json
+{"input": "/.../flow/subclass/relation.rq", "call": "/.../flow/query-ontologies", "sync_next": "./rule"}
+```
+
+`query-ontologies.jq` gets the path of the query as input and returns the
+`arq` command to run (a string, i.e. a shell step); its JSON results are
+passed to the synchronous filter `flow/subclass/rule.jq`, which outputs a
+`CONSTRUCT` query. The same happens for `subproperty`, and the results are
 collected into an array, which is the final result.
 
 ## References to files
@@ -204,8 +213,6 @@ resolved to absolute paths:
 | `path` | the application root: `$FLOW_PATH` for filters, `$DATA_PATH` for data files |
 | `scheme://...` | a URL: kept as it is (not supported yet by `fetch_file`; invalid for filters) |
 
-The `.jq` extension is added to filter references that don't have it.
-
 The engine resolves all the references in a step as soon as it gets it, so
 the step can be moved to another filter's context (e.g. a `next` inserted by
 a `call`) without changing meaning.
@@ -214,6 +221,28 @@ The resolution is implemented in a single place (`_resolve` in
 `engine/lib/engine.jq`), meant to be extended with more complete mechanisms
 for modular development, e.g. `module:path` references to modules registered
 in the configuration, or search paths.
+
+### Filter lookup
+
+Filter references follow jq's convention for modules: `foo/bar` is the file
+`foo/bar.jq` or, if it doesn't exist, `foo/bar/bar.jq`. So a filter can live
+in a directory with the same name, together with the files it uses:
+
+```
+flow/subclass/subclass.jq    # {"call": "subclass"}
+flow/subclass/relation.rq    # "./relation.rq" from subclass.jq
+flow/subclass/rule.jq        # "./rule" from subclass.jq
+```
+
+A reference ending in `.jq` is that file only. `./` references in a filter
+(and in the steps it returns) are relative to the directory of the file
+actually found.
+
+jq can't check whether a file exists, so the lookup is done in two stages:
+references are resolved to absolute references without the extension (as
+above), and the engine picks the file when it runs the filter. If no candidate
+exists, the step fails with
+`{"type": "filter", "filter", "message": "filter not found", "candidates"}`.
 
 ## Data formats
 
@@ -262,7 +291,8 @@ errors are caught where they happen:
 |---|---|
 | an `error` step | its value |
 | a shell command fails | `{"type": "shell", "command", "status"}` |
-| a filter fails (missing file, jq compile or runtime error, ...) | `{"type": "filter", "filter", "status", "message"}` (`message`: jq's stderr) |
+| a filter is not found | `{"type": "filter", "filter", "message", "candidates"}` (`candidates`: the files tried) |
+| a filter fails (jq compile or runtime error, ...) | `{"type": "filter", "filter", "status", "message"}` (`message`: jq's stderr) |
 | a synchronous filter outputs zero or several values | `{"type": "sync_call", "filter", "message"}` |
 | a file can't be fetched | `{"type": "fetch", "file", "message"}` |
 | a file can't be parsed in the requested format | `{"type": "parse", "format", "message"}` |
@@ -302,7 +332,8 @@ Filters run by the engine can `include "engine";` to use:
 | Function | Result |
 |---|---|
 | `resolve_file`, `resolve_file(ref)` | the absolute path of data file `ref` (or of the input reference) |
-| `resolve_filter`, `resolve_filter(ref)` | the absolute path of filter `ref` |
+| `resolve_filter`, `resolve_filter(ref)` | the absolute reference to filter `ref`, usable in steps (without `.jq`: the file is chosen at execution time, see [Filter lookup](#filter-lookup)) |
+| `filter_candidates`, `filter_candidates(ref)` | the files that may hold filter `ref`, in lookup order |
 
 References are resolved as described in [References to files](#references-to-files),
 `./` being relative to the filter run by the engine. This is useful to pass

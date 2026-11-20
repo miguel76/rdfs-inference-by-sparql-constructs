@@ -4,7 +4,9 @@
 #
 # Public API:
 #   resolve_file, resolve_file($ref)      absolute path of a data file
-#   resolve_filter, resolve_filter($ref)  absolute path of a filter
+#   resolve_filter, resolve_filter($ref)  absolute reference to a filter
+#   filter_candidates, filter_candidates($ref)
+#                                         files that may hold a filter
 #
 # References are resolved as described in `_resolve` below. Relative
 # references ("./x", "../x") are relative to the directory of the filter
@@ -59,11 +61,25 @@ def _resolve($base; $root):
         "\($root)/\(.)" | _normalize_path
     end;
 
+# Filter references follow jq's convention for modules: "foo/bar" is the
+# file foo/bar.jq or, if it doesn't exist, foo/bar/bar.jq. A reference ending
+# in ".jq" is the file itself.
+#
+# As jq can't check whether a file exists, a filter reference is resolved in
+# two stages: here, to an absolute reference (still without the ".jq"
+# extension, unless given); then, by the engine at execution time, to the
+# first existing file among its candidates (`_filter_candidates`).
+
 # $config: engine configuration ({flow_path, data_path, ...})
 def resolve_filter_ref($base; $config):
     if _is_url then error("remote filters are not supported: \(.)") else . end |
-    _resolve($base; $config.flow_path) |
-    if endswith(".jq") then . else . + ".jq" end;
+    _resolve($base; $config.flow_path);
+
+# candidate files, in lookup order, for an absolute filter reference
+def _filter_candidates:
+    if endswith(".jq") then [.]
+    else [. + ".jq", "\(.)/\(split("/") | last).jq"]
+    end;
 
 def resolve_file_ref($base; $config):
     _resolve($base; $config.data_path);
@@ -81,3 +97,6 @@ def resolve_file($ref): $ref | resolve_file;
 
 def resolve_filter: _engine_context as $c | resolve_filter_ref($c.base; $c.config);
 def resolve_filter($ref): $ref | resolve_filter;
+
+def filter_candidates: resolve_filter | _filter_candidates;
+def filter_candidates($ref): $ref | filter_candidates;
