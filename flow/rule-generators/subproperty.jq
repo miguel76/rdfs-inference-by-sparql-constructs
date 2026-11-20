@@ -1,5 +1,5 @@
-{
-    result: (
+# Synchronous filter: SPARQL SELECT results in, CONSTRUCT query out.
+(
     "CONSTRUCT {?subj ?super_property ?obj} WHERE {" +
         "?subj ?property ?obj " +
         "VALUES (?super_property ?property) {\(
@@ -10,4 +10,3 @@
         )}" +
     "}"
     )
-}
