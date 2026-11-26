@@ -1,0 +1,12 @@
+{
+  "type": "Cascade",
+  "subflows": [
+    {"type": "Fetch", "location": "relation.rq", "format": "text"},
+    {
+      "type": "Let",
+      "assign": {"flow": {"type": "Get", "input_id": "query_ontologies"}},
+      "subflow": {"type": "Exec"}
+    },
+    {"type": "Jq", "filter_ref": "rule.jq"}
+  ]
+}

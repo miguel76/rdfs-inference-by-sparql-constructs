@@ -2,8 +2,8 @@
   "name": "rdfs-inference-by-sparql-constructs",
   "version": "0.1.0",
   "description": "SPARQL CONSTRUCT queries implementing RDFS inference rules (subClassOf, subPropertyOf) for a set of ontologies",
-  "main": "flow/main.jq",
+  "main": "flow/main.json",
   "dependencies": {
-    "miguel76/async-jq-shell": "^0.1.0"
+    "miguel76/async-jq-shell": "^0.2.0"
   }
 }

@@ -1,0 +1,22 @@
+{
+  "type": "Let",
+  "assign": {
+    "ontologies": {
+      "type": "Jq",
+      "filter_code": "import \"async-jq\" as aj; [\"ccso.owl\", \"data.owl\", \"top-level.owl\"] | map(\"../ontologies/\\(.)\" | aj::resolve_file)"
+    },
+    "query_ontologies": {
+      "type": "Jq",
+      "filter_code": "import \"async-jq\" as aj; aj::exec_ref(\"query-ontologies.json\")"
+    }
+  },
+  "subflow": {
+    "type": "Parallel",
+    "preserve_order": true,
+    "subflows": [
+      {"type": "Exec", "flow_ref": "subclass/subclass.json"},
+      {"type": "Exec", "flow_ref": "subproperty/subproperty.json"},
+      {"type": "Constant", "data": "CONSTRUCT WHERE {?s ?p ?o}"}
+    ]
+  }
+}

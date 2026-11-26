@@ -11,4 +11,4 @@ if [ ! -x "$ASYNC_JQ" ]; then
 fi
 
 mkdir -p output || { echo "Error: Failed to create output directory" >&2; exit 1; }
-"$ASYNC_JQ" -L jq_modules main >output/rewrite-rules.json || { echo "Error: Failed to execute main flow" >&2; exit 1; }
+"$ASYNC_JQ" -L jq_modules flow/main.json >output/rewrite-rules.json || { echo "Error: Failed to execute main flow" >&2; exit 1; }
