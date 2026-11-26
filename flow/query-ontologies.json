@@ -1,0 +1,11 @@
+{
+  "type": "Cascade",
+  "subflows": [
+    {"type": "MakeFile"},
+    {
+      "type": "Let",
+      "assign": {"flow": {"type": "Jq", "filter_ref": "arq.jq"}},
+      "subflow": {"type": "Exec"}
+    }
+  ]
+}
